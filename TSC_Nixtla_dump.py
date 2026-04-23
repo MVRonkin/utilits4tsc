@@ -4,7 +4,12 @@ import matplotlib.pyplot as plt
 from statsforecast import StatsForecast
 from pandas.tseries.frequencies import to_offset
 from sklearn.metrics import mean_pinball_loss
-
+from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
+from statsmodels.stats.diagnostic import acorr_ljungbox, het_breuschpagan
+from statsmodels.tsa.stattools import kpss
+import statsmodels.api as sm
+from scipy import stats
+import warnings 
 import re
 from typing import TYPE_CHECKING, Dict, List, Optional, Union
 
@@ -644,6 +649,103 @@ def quantile_ensemble_forecast(
     return result
 
 
+def plot_model_diagnostics(
+    df_resid, 
+    resid_col="resid", 
+    title_suffix="", 
+    season_length=None,
+    figsize=(9, 6)
+):
+    """
+    Визуализация и статистическая диагностика остатков модели для одной временной серии.
+    
+    Выполняет 4 теста:
+        - KPSS: стационарность остатков
+        - Ljung-Box: автокорреляция
+        - Breusch-Pagan: гетероскедастичность
+        - Jarque-Bera: нормальность распределения
+    
+    Параметры
+    ----------
+    df_resid : pd.DataFrame
+        Датафрейм с колонками ['unique_id', 'ds', resid_col]
+    resid_col : str, default='resid'
+        Имя колонки с остатками
+    title_suffix : str, optional
+        Дополнение к заголовку графика
+    season_length : int, optional
+        Сезонность ряда. Если None — определяется как min(10, T//5)
+    figsize : tuple, default=(9, 6)
+        Размер фигуры
+    
+    Возвращает
+    ----------
+    None
+        Отображает график через plt.show()
+    """
+    uid = df_resid['unique_id'].iloc[0]
+    resid = df_resid[resid_col].dropna()
+    
+    # Защита от коротких рядов
+    if len(resid) < 10:
+        print(f"Пропущено: {uid} — недостаточно данных (T={len(resid)} < 10)")
+        return
+    
+    T = len(resid)
+    
+    # Определение лагов
+    if season_length is not None:
+        lags = min(2 * season_length, T // 5)
+    else:
+        lags = min(10, T // 5)
+    lags = max(lags, 1)
+    lags = min(lags, T // 2)  # ← критическое исправление
+    
+    # Тесты
+    lb_pval = acorr_ljungbox(resid, lags=lags, return_df=True)['lb_pvalue'].iloc[-1]
+    jb_stat, jb_pval = stats.jarque_bera(resid)
+    
+    exog = sm.add_constant(np.arange(len(resid)))
+    _, bp_pval, _, _ = het_breuschpagan(resid, exog)
+    
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        try:
+            # ← критическое исправление: nlags вместо 'auto'
+            kpss_stat, kpss_pval, _, _ = kpss(resid, regression='c', nlags=min(12, T//4))
+        except Exception:
+            kpss_pval = np.nan
+
+    fig, axes = plt.subplots(2, 2, figsize=figsize)
+    fig.suptitle(f'Диагностика остатков: {uid} {title_suffix}', fontsize=12)
+
+    # [0,0] — Остатки + KPSS
+    kpss_txt = f"Residuals (KPSS p={kpss_pval:.3f})" if not np.isnan(kpss_pval) else "Residuals"
+    axes[0, 0].plot(df_resid['ds'], df_resid[resid_col], linewidth=0.8)
+    axes[0, 0].set_title(kpss_txt)
+    axes[0, 0].set_ylabel('Остатки')
+    axes[0, 0].grid(True, linestyle='--', alpha=0.5)
+    axes[0, 0].tick_params(axis='x', rotation=45)
+    
+    # [0,1] — ACF + Ljung-Box
+    plot_acf(resid, ax=axes[0, 1], zero=False, auto_ylims=True)
+    axes[0, 1].set_title(f'ACF (Ljung-Box p={lb_pval:.3f})')
+
+    # [1,0] — Гистограмма + Breusch-Pagan
+    axes[1, 0].hist(resid, bins=15, edgecolor='k', alpha=0.7)
+    axes[1, 0].set_xlabel('Остатки')
+    axes[1, 0].set_ylabel('Частота')
+    axes[1, 0].set_title(f"Histogram (BP p={bp_pval:.3f})")
+
+    # [1,1] — Q-Q + Jarque-Bera
+    stats.probplot(resid, dist="norm", plot=axes[1, 1])
+    axes[1, 1].set_title(f'Q-Q (JB p={jb_pval:.3f})')
+
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    plt.show()
+
+
+    
 def plot_cv_windows_subplots(
     df_original,
     cv_df,

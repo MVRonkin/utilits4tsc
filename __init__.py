@@ -3,7 +3,7 @@ from .TSC_Nixtla_dump import *
 from .rule_ad import *
 from .plot_series import *
 from .prophet_adapter import *
-
+from .cv_nixtla import *
 import os
 import re
 import nbformat
